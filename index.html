@@ -1,0 +1,518 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>No-Buttons Calc</title>
+
+<!-- PWA hooks -->
+<link rel="manifest" href="manifest.webmanifest">
+<meta name="theme-color" content="#0f2747">
+<script>
+  if ('serviceWorker' in navigator) {
+    window.addEventListener('load', () => navigator.serviceWorker.register('./sw.js'));
+  }
+</script>
+
+<style>
+  :root{
+    --bg:#0a0e15;
+    --navy:#17385f;     /* brighter navy for contrast on non-Mac displays */
+    --navy-2:#1c4472;
+    --ink:#dfe7ef;      /* body text */
+    --ink-soft:#b8c6d6; /* input text */
+    --muted:#7d8aa1;
+    --sep:#1d2a43;
+    --orange:#f3923f;
+    --orange-deep:#d77a2f; /* result text */
+    --blue-bright:#4aa3ff; /* operator */
+    --shadow: 0 6px 18px rgba(0,0,0,0.35);
+    --radius-lg: 22px;
+  }
+  html,body{
+    height:100%;
+    background:var(--bg);
+    color:var(--ink);
+    margin:0;
+    font-family:"Futura","Avenir Next",-apple-system,system-ui,Segoe UI,Roboto,Helvetica,Arial,sans-serif;
+  }
+  *{ box-sizing:border-box }
+
+  .app{ max-width:720px; margin:0 auto; padding:14px; display:flex; flex-direction:column; gap:10px; }
+  .panel{
+    background: linear-gradient(180deg, rgba(28,68,114,.16), rgba(28,68,114,.08));
+    border: 1px solid var(--navy);
+    border-radius: var(--radius-lg);
+    box-shadow: var(--shadow);
+    padding: 12px 12px 8px;
+  }
+
+  .top{ display:grid; grid-template-rows:auto 8px auto; gap:6px; }
+
+  /* ===== Contenteditable INPUT ===== */
+  .eq-wrap{ min-height:48px; }
+  #equation{
+    outline:none; border:none; background:transparent;
+    font-size: clamp(17px,2.4vw,24px);
+    line-height:1.25;
+    color: var(--ink-soft);
+    caret-color: var(--orange);
+    word-break: break-word;
+    white-space: pre-wrap;
+  }
+  #equation .op{ color:var(--blue-bright); font-weight:600; }
+  #equation .par{ color:var(--blue-bright); opacity:.9; }
+  #equation .num{ color:#dfe7ef; }
+
+  .divider{ height:1px; background:var(--sep); border-radius:1px; }
+
+  /* ===== RESULT ===== */
+  .result-wrap{
+    display:flex; align-items:flex-end; justify-content:flex-end; gap:8px;
+    min-height:48px; padding:6px 8px; border-radius:14px;
+    background: rgba(28,68,114,.18);
+  }
+  .equals{
+    font-weight:700; font-size:clamp(22px,4.6vw,38px);
+    color: var(--ink-soft);               /* less bright */
+    user-select:none;
+  }
+  #result{
+    min-height:36px; display:flex; align-items:flex-end; justify-content:flex-end;
+    font-weight:700; color:var(--orange-deep);
+    font-size:clamp(24px,5vw,42px); line-height:1.12;
+    user-select:text; white-space:pre-wrap; word-break:break-word;
+  }
+  #result.dim{ opacity:.25; filter:saturate(60%); }
+
+  /* ===== Converters ===== */
+  .converters{ display:grid; grid-template-columns:1fr 1fr; gap:8px; margin-top:8px; }
+  .box{
+    background: linear-gradient(180deg, rgba(28,68,114,.30), rgba(28,68,114,.12));
+    border: 1px solid var(--navy-2);
+    border-radius:14px; padding:8px 10px; min-height:50px;
+    display:flex; flex-direction:column; align-items:center; justify-content:center;
+  }
+  .box .label{ font-size:11px; color:var(--muted); letter-spacing:.05em; text-transform:lowercase; }
+  .box .value{ font-size:clamp(15px,2.4vw,20px); color:var(--ink); margin-top:4px; text-align:center; }
+  .box.empty .value{ opacity:.3; }
+
+  /* ===== History ===== */
+  .history{ margin-top:8px; display:flex; flex-direction:column; gap:6px; max-height:48vh; overflow:auto; }
+  .row{
+    display:grid; grid-template-columns:1fr auto; gap:10px; align-items:baseline;
+    background: rgba(23,56,95,.12);
+    border:1px solid var(--navy);
+    border-radius:14px;
+    padding:6px 8px;
+    cursor:default;
+  }
+  .row:focus{ outline:none; }                 /* remove blue focus ring */
+  .row.selected{ box-shadow:0 0 0 2px var(--orange) inset; }
+  .row .expr{ color:var(--ink-soft); font-size:14px; user-select:text; overflow-wrap:anywhere; }
+  .row .expr .op, .row .expr .par{ color:var(--blue-bright); }
+  .row .val{ color:var(--orange-deep); font-size:15px; font-weight:700; user-select:text; }
+  .row .eqs{ color:var(--ink-soft); font-weight:700; margin-right:6px; }
+
+  /* Toast */
+  .toast{
+    position:fixed; bottom:14px; right:14px;
+    background:rgba(243,146,63,.95); color:#1b1b1b;
+    padding:6px 9px; border-radius:10px; font-size:12px;
+    opacity:0; transform:translateY(8px);
+    transition:opacity .16s, transform .16s; pointer-events:none;
+  }
+  .toast.show{ opacity:1; transform:translateY(0); }
+
+  .all-selected{ outline:2px dashed var(--orange); outline-offset:6px; border-radius:16px; }
+</style>
+</head>
+<body>
+<div class="app" id="app">
+  <div class="panel top" id="mainPanel">
+    <div class="eq-wrap">
+      <div id="equation" contenteditable="true" role="textbox" aria-label="Enter expression"></div>
+    </div>
+    <div class="divider"></div>
+    <div class="result-wrap">
+      <div class="equals">=</div>
+      <div id="result" contenteditable="true" aria-label="Result (double-click to select; right-click to copy)"></div>
+    </div>
+    <div class="converters">
+      <div class="box" id="inchBox"><div class="label">in</div><div class="value" id="inchVal">—</div></div>
+      <div class="box" id="mmBox"><div class="label">mm</div><div class="value" id="mmVal">—</div></div>
+    </div>
+  </div>
+  <div class="panel"><div class="history" id="history"></div></div>
+</div>
+
+<div class="toast" id="toast">Copied</div>
+
+<script>
+(() => {
+  /* ===== Utilities ===== */
+  const clampDecimals = (num, places) => Math.round((num + Number.EPSILON) * (10**places)) / (10**places);
+  function formatNumber(value, maxDecimals=8){
+    if (!isFinite(value)) return '∞';
+    const rounded = clampDecimals(value, maxDecimals);
+    let [i,f] = Math.abs(rounded).toFixed(maxDecimals).split('.');
+    f = (f||'').replace(/0+$/,'');
+    i = i.replace(/\B(?=(\d{3})+(?!\d))/g, ',');
+    let out = f ? `${i}.${f}` : i;
+    if (rounded < 0) out = '-' + out;
+    return out;
+  }
+  const formatInch = v => formatNumber(v/25.4, 5);
+  const formatMM   = v => formatNumber(v*25.4, 5);
+  const showToast = (msg='Copied') => {
+    const t=document.getElementById('toast');
+    t.textContent=msg; t.classList.add('show');
+    setTimeout(()=>t.classList.remove('show'), 900);
+  };
+
+  /* ===== Tokenize / Parse / Eval ===== */
+  function tokenize(str){
+    const tokens=[]; let i=0;
+    while(i<str.length){
+      const ch=str[i];
+      if (/[0-9.]/.test(ch)){
+        let j=i,d=0; while(j<str.length && /[0-9.]/.test(str[j])){ if(str[j]==='.') d++; if(d>1) return null; j++; }
+        const seg=str.slice(i,j); if(seg==='.'||seg==='') return null;
+        tokens.push({t:'num', v:parseFloat(seg), s:seg}); i=j; continue;
+      }
+      if ('+-*/()'.includes(ch)){ tokens.push({t:ch, s:ch}); i++; continue; }
+      return null;
+    }
+    return tokens;
+  }
+  function parseExpression(tokens){
+    let i=0; const P=()=>tokens[i]; const C=t=>P()&&P().t===t&&(i++,true);
+    function F(){ if(C('-')){ const f=F(); if(f==null) return null; return -f; }
+      const tk=P(); if(!tk) return null;
+      if(C('(')){ const v=E(); if(v==null) return null; if(!C(')')) return null; return v; }
+      if(tk.t==='num'){ i++; return tk.v; }
+      return null; }
+    function T(){ let v=F(); if(v==null) return null; while(true){
+        if(C('*')){ const r=F(); if(r==null) return null; v*=r; }
+        else if(C('/')){ const r=F(); if(r==null) return null; v/=r; }
+        else break; } return v; }
+    function E(){ let v=T(); if(v==null) return null; while(true){
+        if(C('+')){ const r=T(); if(r==null) return null; v+=r; }
+        else if(C('-')){ const r=T(); if(r==null) return null; v-=r; }
+        else break; } return v; }
+    const out=E(); if(out==null||i!==tokens.length) return null; return out;
+  }
+  function evaluate(expr){
+    if(!expr) return {ok:false};
+    const tokens=tokenize(expr); if(!tokens) return {ok:false};
+    const val=parseExpression(tokens); if(val==null||!isFinite(val)) return {ok:false};
+    return {ok:true,value:val,tokens};
+  }
+  function hasBinaryOperator(tokens){
+    if(!tokens) return false; let prev=null;
+    for(const tk of tokens){
+      if(tk.t==='+'||tk.t==='*'||tk.t==='/') return true;
+      if(tk.t==='-'){ if(prev&&(prev.t==='num'||prev.t===')')) return true; }
+      prev=tk;
+    }
+    return false;
+  }
+
+  /* ===== Caret utils (contenteditable) ===== */
+  function getCaretIndex(el){
+    const sel = window.getSelection(); if(!sel || sel.rangeCount===0) return 0;
+    const range = sel.getRangeAt(0).cloneRange();
+    range.selectNodeContents(el); range.setEnd(sel.anchorNode, sel.anchorOffset);
+    return range.toString().length;
+  }
+  function setCaretIndex(el, idx){
+    const walker = document.createTreeWalker(el, NodeFilter.SHOW_TEXT, null);
+    let pos=0, node;
+    while((node=walker.nextNode())){
+      const len=node.nodeValue.length;
+      if(pos+len >= idx){
+        const r=document.createRange(); r.setStart(node, idx-pos); r.collapse(true);
+        const s=window.getSelection(); s.removeAllRanges(); s.addRange(r); return;
+      }
+      pos+=len;
+    }
+    const r=document.createRange(); r.selectNodeContents(el); r.collapse(false);
+    const s=window.getSelection(); s.removeAllRanges(); s.addRange(r);
+  }
+
+  /* ===== DOM ===== */
+  const eq   = document.getElementById('equation');
+  const res  = document.getElementById('result');
+  const hist = document.getElementById('history');
+  const inchVal = document.getElementById('inchVal');
+  const mmVal   = document.getElementById('mmVal');
+  const inchBox = document.getElementById('inchBox');
+  const mmBox   = document.getElementById('mmBox');
+  const mainPanel = document.getElementById('mainPanel');
+  const app = document.getElementById('app');
+
+  // --- History selection management ---
+  function clearHistorySelection(){
+    if (selectedHistoryIndex !== -1) {
+      selectedHistoryIndex = -1;
+      renderHistory(false);
+    }
+  }
+  // Clear orange selection when clicking outside history or back in main
+  eq.addEventListener('mousedown', clearHistorySelection);
+  res.addEventListener('mousedown', clearHistorySelection);
+  inchBox.addEventListener('mousedown', clearHistorySelection);
+  mmBox.addEventListener('mousedown', clearHistorySelection);
+  // Any click on the app that's not inside history clears selection
+  app.addEventListener('mousedown', (e)=>{
+    if (!hist.contains(e.target)) clearHistorySelection();
+  });
+
+  /* ===== History store ===== */
+  const LS_KEY='nobuttons_calc_history_v2';
+  const loadHistory=()=>{try{const r=localStorage.getItem(LS_KEY);return r?JSON.parse(r).slice(0,100):[]}catch{return[]}};
+  const saveHistory=a=>{try{localStorage.setItem(LS_KEY,JSON.stringify(a))}catch{}};
+  let history = loadHistory();
+
+  /* ===== Input sanitize + highlight ===== */
+  function sanitize(str){ return str.replace(/[^0-9+\-*/().]/g,''); }
+  function plainText(el){ return el.textContent || ''; }
+
+  function renderEqHighlighted(){
+    const raw = sanitize(plainText(eq));
+    const caret = getCaretIndex(eq);
+    const tokens = tokenize(raw);
+    if(!tokens){ eq.textContent = raw; setCaretIndex(eq, Math.min(caret, raw.length)); return; }
+    eq.innerHTML = tokens.map(t=>{
+      if(t.t==='num') return `<span class="num">${t.s}</span>`;
+      if('+-*/'.includes(t.t)) return `<span class="op">${t.s}</span>`;
+      if('()'.includes(t.t)) return `<span class="par">${t.s}</span>`;
+      return t.s || '';
+    }).join('');
+    setCaretIndex(eq, Math.min(caret, raw.length));
+  }
+
+  /* ===== Live compute + converters + history ===== */
+  let idleTimer=null, currentValue=null, currentTokens=null;
+
+  function setResultDisplay(text, dim=false){
+    res.textContent = text || '';
+    res.classList.toggle('dim', dim);
+    if(!dim && text && text.trim()){
+      inchBox.classList.remove('empty'); mmBox.classList.remove('empty');
+      inchVal.textContent = formatInch(currentValue);
+      mmVal.textContent = formatMM(currentValue);
+    } else {
+      inchBox.classList.add('empty'); inchVal.textContent='—';
+      mmBox.classList.add('empty');   mmVal.textContent='—';
+    }
+  }
+
+  function recompute(){
+    const expr = sanitize(plainText(eq));
+    const ev = evaluate(expr);
+    if(ev.ok){ currentValue=ev.value; currentTokens=ev.tokens; setResultDisplay(formatNumber(ev.value,8), false); }
+    else{ currentValue=null; currentTokens=null; setResultDisplay('', true); }
+  }
+
+  function scheduleLog(){ if(idleTimer) clearTimeout(idleTimer); idleTimer=setTimeout(()=>logToHistoryIfValid(false),2000); }
+  function logToHistoryIfValid(force){
+    if(currentValue==null) return;
+    const expr = sanitize(plainText(eq));
+    const resultStr = formatNumber(currentValue,8);
+    if(!force){ if(!hasBinaryOperator(currentTokens)) return; }
+    if(history.length && history[0].expr===expr && history[0].result===resultStr) return;
+    history.unshift({expr,result:resultStr});
+    history = history.slice(0,100);
+    saveHistory(history);
+    selectedHistoryIndex = -1;      // clear any sticky selection
+    renderHistory(false);           // do not focus history
+    // keep typing experience: ensure focus stays in the equation
+    if (document.activeElement !== eq) { eq.focus(); }
+  }
+
+  /* ===== History rendering / interactions ===== */
+  let selectedHistoryIndex=-1;
+
+  function highlightExprHTML(s){
+    const t=tokenize(sanitize(s)); if(!t) return s;
+    return t.map(x=>{
+      if(x.t==='num') return `<span class="num">${x.s}</span>`;
+      if('+-*/'.includes(x.t)) return `<span class="op">${x.s}</span>`;
+      if('()'.includes(x.t)) return `<span class="par">${x.s}</span>`;
+      return x.s||'';
+    }).join('');
+  }
+
+  function deleteSelectedHistory(){
+    if (selectedHistoryIndex < 0) return;
+    history.splice(selectedHistoryIndex, 1);
+    if (selectedHistoryIndex >= history.length) selectedHistoryIndex = history.length - 1;
+    saveHistory(history);
+    renderHistory(true); // keep focus
+  }
+
+  function renderHistory(keepFocus=false){
+    hist.innerHTML='';
+    if(!history.length){
+      selectedHistoryIndex = -1;
+      const d=document.createElement('div');
+      d.style.color='var(--muted)'; d.style.fontSize='12px';
+      d.textContent='No entries yet.'; hist.appendChild(d); return;
+    }
+
+    history.forEach((h,idx)=>{
+      const row=document.createElement('div');
+      row.className='row'; row.tabIndex=0;
+      if(idx===selectedHistoryIndex) row.classList.add('selected');
+
+      const expr=document.createElement('div');
+      expr.className='expr';
+      expr.innerHTML=highlightExprHTML(h.expr);
+      expr.title='Double-click to load into input';
+      expr.addEventListener('dblclick',()=>{ eq.textContent=sanitize(h.expr); renderEqHighlighted(); eq.focus(); recompute(); });
+      expr.addEventListener('contextmenu',async e=>{ e.preventDefault(); try{await navigator.clipboard.writeText(h.expr); showToast('Equation copied');}catch{showToast('Copy failed');} });
+
+      const right=document.createElement('div'); right.style.display='flex'; right.style.alignItems='baseline';
+      const eqs=document.createElement('div'); eqs.className='eqs'; eqs.textContent='=';
+      const val=document.createElement('div'); val.className='val'; val.textContent=h.result;
+      val.title='Double-click to load result into input';
+      val.addEventListener('dblclick',()=>{ eq.textContent=sanitize(String(h.result)); renderEqHighlighted(); eq.focus(); recompute(); });
+      val.addEventListener('contextmenu',async e=>{ e.preventDefault(); try{await navigator.clipboard.writeText(h.result); showToast('Result copied');}catch{showToast('Copy failed');} });
+
+      // Select row on click and focus it so Delete works immediately
+      row.addEventListener('click', ()=>{ selectedHistoryIndex = idx; renderHistory(true); });
+      row.addEventListener('focus', ()=>{ selectedHistoryIndex = idx; renderHistory(true); });
+
+      // Delete/Backspace remove one item (guard repeat)
+      row.addEventListener('keydown', (e)=>{
+        if (e.repeat) return;
+        if(e.key==='Delete' || e.key==='Backspace'){
+          e.preventDefault();
+          deleteSelectedHistory();
+        }
+      });
+
+      right.appendChild(eqs); right.appendChild(val);
+      row.appendChild(expr); row.appendChild(right);
+      hist.appendChild(row);
+    });
+
+    // restore focus
+    if (keepFocus && selectedHistoryIndex >= 0) {
+      const rows = hist.querySelectorAll('.row');
+      if (rows[selectedHistoryIndex]) rows[selectedHistoryIndex].focus();
+    }
+  }
+
+  /* ===== Input events (contenteditable) ===== */
+  function handleSanitizedInput(){
+    const raw = plainText(eq);
+    const clean = sanitize(raw);
+    if(raw !== clean){ eq.textContent = clean; }
+    renderEqHighlighted();
+    recompute(); scheduleLog();
+  }
+
+  // Block spaces
+  eq.addEventListener('beforeinput', (e)=>{
+    if(e.inputType === 'insertText' && e.data === ' '){ e.preventDefault(); }
+  });
+  eq.addEventListener('input', handleSanitizedInput);
+  eq.addEventListener('paste', (e)=>{
+    e.preventDefault();
+    const text=(e.clipboardData||window.clipboardData).getData('text');
+    document.execCommand('insertText', false, sanitize(text));
+  });
+  eq.addEventListener('keydown', (e)=>{
+    if(e.key==='Enter'){ e.preventDefault(); recompute(); if(currentValue!=null) logToHistoryIfValid(true); }
+    if(e.key==='Escape'){ e.preventDefault(); clearAll(); }
+  });
+
+  function clearAll(){
+    eq.textContent=''; renderEqHighlighted(); setResultDisplay('', true);
+    eq.focus();
+    resultFullySelected=false; allSelectedFlag=false; app.classList.remove('all-selected');
+  }
+
+  /* ===== Result area ===== */
+  res.addEventListener('dblclick',()=>{
+    const r=document.createRange(); r.selectNodeContents(res);
+    const s=window.getSelection(); s.removeAllRanges(); s.addRange(r);
+    resultFullySelected=true;
+  });
+  res.addEventListener('contextmenu', async (e)=>{
+    e.preventDefault();
+    const t=(res.textContent||'').trim(); if(!t) return;
+    try{ await navigator.clipboard.writeText(t); showToast('Result copied'); }
+    catch{ showToast('Copy failed'); }
+  });
+  res.addEventListener('keydown',(e)=>{
+    const isCmdC=(e.metaKey||e.ctrlKey)&&(e.key.toLowerCase()==='c'); if(isCmdC) return;
+    if(['Shift','Alt','Meta','Control','ArrowLeft','ArrowRight','ArrowUp','ArrowDown','Home','End','PageUp','PageDown'].includes(e.key)) return;
+    e.preventDefault();
+    const base=(res.textContent||'').trim(); if(!base){ eq.focus(); return; }
+    if(e.key==='Escape'){ clearAll(); return; }
+    if(e.key==='Backspace'||e.key==='Delete'){
+      eq.textContent=sanitize(base); renderEqHighlighted(); eq.focus(); recompute(); scheduleLog(); return;
+    }
+    if(e.key.length===1){
+      eq.textContent=sanitize(base)+sanitize(e.key); renderEqHighlighted(); eq.focus(); recompute(); scheduleLog(); return;
+    }
+    if(e.key==='Enter'){ recompute(); if(currentValue!=null) logToHistoryIfValid(true); }
+  });
+
+  /* ===== Right-click copy for converters ===== */
+  inchVal.addEventListener('contextmenu', async (e)=>{
+    e.preventDefault();
+    const t=(inchVal.textContent||'').trim(); if(!t || t==='—') return;
+    try{ await navigator.clipboard.writeText(t); showToast('in copied'); }
+    catch{ showToast('Copy failed'); }
+  });
+  mmVal.addEventListener('contextmenu', async (e)=>{
+    e.preventDefault();
+    const t=(mmVal.textContent||'').trim(); if(!t || t==='—') return;
+    try{ await navigator.clipboard.writeText(t); showToast('mm copied'); }
+    catch{ showToast('Copy failed'); }
+  });
+
+  /* ===== Quadruple-click main panel => select-all ===== */
+  let clickCount=0, clickTimer=null, allSelectedFlag=false, resultFullySelected=false;
+  mainPanel.addEventListener('click', ()=>{
+    clickCount++; if(clickTimer) clearTimeout(clickTimer);
+    clickTimer=setTimeout(()=>{ if(clickCount>=4){ allSelectedFlag=true; app.classList.add('all-selected'); } clickCount=0; }, 350);
+  });
+  window.addEventListener('keydown',(e)=>{
+    if(!allSelectedFlag) return;
+    if(e.key==='Escape'||e.key==='Backspace'||e.key==='Delete'||e.key.length===1){
+      e.preventDefault(); clearAll();
+      if(e.key.length===1){ document.execCommand('insertText', false, e.key); handleSanitizedInput(); }
+    }
+  });
+
+  /* ===== Global safety net for Delete on selected history ===== */
+  function isEditingEqOrResult(){
+    const a=document.activeElement;
+    return a===eq || a===res || (a && a.isContentEditable);
+  }
+  let deleteCooldown = false;
+ window.addEventListener('keydown', (e) => {
+  if (deleteCooldown) return;             // block duplicate triggers
+  if ((e.key === 'Delete' || e.key === 'Backspace') &&
+      selectedHistoryIndex >= 0 &&
+      !isEditingEqOrResult() &&
+      !hist.contains(document.activeElement)) {
+    e.preventDefault();
+    deleteCooldown = true;
+    deleteSelectedHistory();
+    setTimeout(() => deleteCooldown = false, 150);  // small debounce
+  }
+});
+
+  /* ===== Init ===== */
+  renderEqHighlighted(); recompute(); eq.focus();
+  renderHistory();
+})();
+</script>
+</body>
+</html>
