@@ -16,17 +16,17 @@
 
 <style>
   :root{
-    --bg:#0a0e15;
-    --navy:#17385f;     /* brighter navy for contrast on non-Mac displays */
-    --navy-2:#1c4472;
-    --ink:#dfe7ef;      /* body text */
-    --ink-soft:#b8c6d6; /* input text */
-    --muted:#7d8aa1;
-    --sep:#1d2a43;
+    --bg:#0f1012;
+    --navy:#232630;
+    --navy-2:#2c3040;
+    --ink:#cdd5de;
+    --ink-soft:#9aaabb;
+    --muted:#6a7585;
+    --sep:#1c1f26;
     --orange:#f3923f;
-    --orange-deep:#d77a2f; /* result text */
-    --blue-bright:#4aa3ff; /* operator */
-    --shadow: 0 6px 18px rgba(0,0,0,0.35);
+    --orange-deep:#d77a2f;
+    --blue-bright:#4aa3ff;
+    --shadow: 0 6px 18px rgba(0,0,0,0.50);
     --radius-lg: 22px;
   }
   html,body{
@@ -34,23 +34,26 @@
     background:var(--bg);
     color:var(--ink);
     margin:0;
+    overflow:hidden;
     font-family:"Futura","Avenir Next",-apple-system,system-ui,Segoe UI,Roboto,Helvetica,Arial,sans-serif;
   }
   *{ box-sizing:border-box }
 
-  .app{ max-width:720px; margin:0 auto; padding:14px; display:flex; flex-direction:column; gap:10px; }
+  .app{ max-width:720px; margin:0 auto; padding:14px; display:flex; flex-direction:column; gap:10px; height:100dvh; }
   .panel{
-    background: linear-gradient(180deg, rgba(28,68,114,.16), rgba(28,68,114,.08));
+    background: linear-gradient(180deg, rgba(35,38,48,.30), rgba(35,38,48,.15));
     border: 1px solid var(--navy);
     border-radius: var(--radius-lg);
     box-shadow: var(--shadow);
     padding: 12px 12px 8px;
   }
+  .app > .panel:last-child{ flex:1; min-height:0; display:flex; flex-direction:column; }
 
   .top{ display:grid; grid-template-rows:auto 8px auto; gap:6px; }
 
   /* ===== Contenteditable INPUT ===== */
-  .eq-wrap{ min-height:48px; }
+  .eq-wrap{ min-height:48px; border-left:2px solid transparent; padding-left:4px; transition:border-color .15s; }
+  .eq-wrap:focus-within{ border-left-color:var(--orange-deep); }
   #equation{
     outline:none; border:none; background:transparent;
     font-size: clamp(17px,2.4vw,24px);
@@ -70,7 +73,7 @@
   .result-wrap{
     display:flex; align-items:flex-end; justify-content:flex-end; gap:8px;
     min-height:48px; padding:6px 8px; border-radius:14px;
-    background: rgba(28,68,114,.18);
+    background: rgba(35,38,48,.36);
   }
   .equals{
     font-weight:700; font-size:clamp(22px,4.6vw,38px);
@@ -88,7 +91,7 @@
   /* ===== Converters ===== */
   .converters{ display:grid; grid-template-columns:1fr 1fr; gap:8px; margin-top:8px; }
   .box{
-    background: linear-gradient(180deg, rgba(28,68,114,.30), rgba(28,68,114,.12));
+    background: linear-gradient(180deg, rgba(35,38,48,.42), rgba(35,38,48,.22));
     border: 1px solid var(--navy-2);
     border-radius:14px; padding:8px 10px; min-height:50px;
     display:flex; flex-direction:column; align-items:center; justify-content:center;
@@ -98,16 +101,25 @@
   .box.empty .value{ opacity:.3; }
 
   /* ===== History ===== */
-  .history{ margin-top:8px; display:flex; flex-direction:column; gap:6px; max-height:48vh; overflow:auto; }
+  .history{
+    margin-top:8px; display:flex; flex-direction:column; gap:6px;
+    flex:1; min-height:0; overflow-y:auto;
+    scrollbar-width:thin; scrollbar-color:rgba(255,255,255,.08) transparent;
+  }
+  .history::-webkit-scrollbar{ width:3px; }
+  .history::-webkit-scrollbar-track{ background:transparent; }
+  .history::-webkit-scrollbar-thumb{ background:rgba(255,255,255,.09); border-radius:3px; }
+  .history::-webkit-scrollbar-thumb:hover{ background:rgba(255,255,255,.17); }
   .row{
     display:grid; grid-template-columns:1fr auto; gap:10px; align-items:baseline;
-    background: rgba(23,56,95,.12);
+    background: rgba(35,38,48,.24);
     border:1px solid var(--navy);
     border-radius:14px;
     padding:6px 8px;
     cursor:default;
   }
-  .row:focus{ outline:none; }                 /* remove blue focus ring */
+  .row:focus{ outline:none; }
+  .row:hover{ background: rgba(255,255,255,.04); }
   .row.selected{ box-shadow:0 0 0 2px var(--orange) inset; }
   .row .expr{ color:var(--ink-soft); font-size:14px; user-select:text; overflow-wrap:anywhere; }
   .row .expr .op, .row .expr .par{ color:var(--blue-bright); }
@@ -123,6 +135,7 @@
     transition:opacity .16s, transform .16s; pointer-events:none;
   }
   .toast.show{ opacity:1; transform:translateY(0); }
+  .toast.err{ background:rgba(210,60,55,.95); }
 
   .all-selected{ outline:2px dashed var(--orange); outline-offset:6px; border-radius:16px; }
 </style>
@@ -164,10 +177,10 @@
   }
   const formatInch = v => formatNumber(v/25.4, 5);
   const formatMM   = v => formatNumber(v*25.4, 5);
-  const showToast = (msg='Copied') => {
+  const showToast = (msg='Copied', isError=false) => {
     const t=document.getElementById('toast');
-    t.textContent=msg; t.classList.add('show');
-    setTimeout(()=>t.classList.remove('show'), 900);
+    t.textContent=msg; t.classList.toggle('err', isError); t.classList.add('show');
+    setTimeout(()=>t.classList.remove('show'), isError ? 2200 : 900);
   };
 
   /* ===== Tokenize / Parse / Eval ===== */
@@ -180,38 +193,51 @@
         const seg=str.slice(i,j); if(seg==='.'||seg==='') return null;
         tokens.push({t:'num', v:parseFloat(seg), s:seg}); i=j; continue;
       }
-      if ('+-*/()'.includes(ch)){ tokens.push({t:ch, s:ch}); i++; continue; }
+      if ('+-*/()^%'.includes(ch)){ tokens.push({t:ch, s:ch}); i++; continue; }
       return null;
     }
     return tokens;
   }
   function parseExpression(tokens){
-    let i=0; const P=()=>tokens[i]; const C=t=>P()&&P().t===t&&(i++,true);
-    function F(){ if(C('-')){ const f=F(); if(f==null) return null; return -f; }
-      const tk=P(); if(!tk) return null;
-      if(C('(')){ const v=E(); if(v==null) return null; if(!C(')')) return null; return v; }
+    let i=0;
+    const peek=()=>tokens[i];
+    const consume=t=>peek()&&peek().t===t&&(i++,true);
+    function Atom(){
+      const tk=peek(); if(!tk) return null;
+      if(consume('(')){ const v=E(); if(v==null) return null; if(!consume(')')) return null; return v; }
       if(tk.t==='num'){ i++; return tk.v; }
       return null; }
-    function T(){ let v=F(); if(v==null) return null; while(true){
-        if(C('*')){ const r=F(); if(r==null) return null; v*=r; }
-        else if(C('/')){ const r=F(); if(r==null) return null; v/=r; }
+    function F(){
+      if(consume('-')){ const p=Pw(); if(p==null) return null; return -p; }
+      return Atom(); }
+    function Pw(){
+      const base=F(); if(base==null) return null;
+      if(consume('^')){ const exp=Pw(); if(exp==null) return null; return Math.pow(base,exp); }
+      return base; }
+    function T(){ let v=Pw(); if(v==null) return null; while(true){
+        if(consume('*')){ const r=Pw(); if(r==null) return null; v*=r; }
+        else if(consume('/')){ const r=Pw(); if(r==null) return null; v/=r; }
+        else if(consume('%')){ const r=Pw(); if(r==null) return null; if(r===0) return NaN; v%=r; }
         else break; } return v; }
     function E(){ let v=T(); if(v==null) return null; while(true){
-        if(C('+')){ const r=T(); if(r==null) return null; v+=r; }
-        else if(C('-')){ const r=T(); if(r==null) return null; v-=r; }
+        if(consume('+')){ const r=T(); if(r==null) return null; v+=r; }
+        else if(consume('-')){ const r=T(); if(r==null) return null; v-=r; }
         else break; } return v; }
     const out=E(); if(out==null||i!==tokens.length) return null; return out;
   }
   function evaluate(expr){
-    if(!expr) return {ok:false};
-    const tokens=tokenize(expr); if(!tokens) return {ok:false};
-    const val=parseExpression(tokens); if(val==null||!isFinite(val)) return {ok:false};
+    if(!expr) return {ok:false, reason:'empty'};
+    const tokens=tokenize(expr); if(!tokens) return {ok:false, reason:'syntax'};
+    const val=parseExpression(tokens);
+    if(val==null) return {ok:false, reason:'syntax'};
+    if(isNaN(val)) return {ok:false, reason:'divzero'};
+    if(!isFinite(val)) return {ok:false, reason:'overflow'};
     return {ok:true,value:val,tokens};
   }
   function hasBinaryOperator(tokens){
     if(!tokens) return false; let prev=null;
     for(const tk of tokens){
-      if(tk.t==='+'||tk.t==='*'||tk.t==='/') return true;
+      if(tk.t==='+'||tk.t==='*'||tk.t==='/'||tk.t==='^'||tk.t==='%') return true;
       if(tk.t==='-'){ if(prev&&(prev.t==='num'||prev.t===')')) return true; }
       prev=tk;
     }
@@ -275,7 +301,10 @@
   let history = loadHistory();
 
   /* ===== Input sanitize + highlight ===== */
-  function sanitize(str){ return str.replace(/[^0-9+\-*/().]/g,''); }
+  function sanitize(str){ return str.replace(/[^0-9+\-*/().^%]/g,''); }
+  function prefixLeadingDots(str){
+    return str.replace(/(^|[+\-*\/\(^%])(\.)(\d)/g, '$10$2$3');
+  }
   function plainText(el){ return el.textContent || ''; }
 
   function renderEqHighlighted(){
@@ -285,7 +314,7 @@
     if(!tokens){ eq.textContent = raw; setCaretIndex(eq, Math.min(caret, raw.length)); return; }
     eq.innerHTML = tokens.map(t=>{
       if(t.t==='num') return `<span class="num">${t.s}</span>`;
-      if('+-*/'.includes(t.t)) return `<span class="op">${t.s}</span>`;
+      if('+-*/^%'.includes(t.t)) return `<span class="op">${t.s}</span>`;
       if('()'.includes(t.t)) return `<span class="par">${t.s}</span>`;
       return t.s || '';
     }).join('');
@@ -293,7 +322,7 @@
   }
 
   /* ===== Live compute + converters + history ===== */
-  let idleTimer=null, currentValue=null, currentTokens=null;
+  let idleTimer=null, currentValue=null, currentTokens=null, lastErrorReason=null;
 
   function setResultDisplay(text, dim=false){
     res.textContent = text || '';
@@ -311,8 +340,8 @@
   function recompute(){
     const expr = sanitize(plainText(eq));
     const ev = evaluate(expr);
-    if(ev.ok){ currentValue=ev.value; currentTokens=ev.tokens; setResultDisplay(formatNumber(ev.value,8), false); }
-    else{ currentValue=null; currentTokens=null; setResultDisplay('', true); }
+    if(ev.ok){ lastErrorReason=null; currentValue=ev.value; currentTokens=ev.tokens; setResultDisplay(formatNumber(ev.value,8), false); }
+    else{ lastErrorReason=ev.reason||null; currentValue=null; currentTokens=null; setResultDisplay('', true); }
   }
 
   function scheduleLog(){ if(idleTimer) clearTimeout(idleTimer); idleTimer=setTimeout(()=>logToHistoryIfValid(false),2000); }
@@ -346,10 +375,12 @@
 
   function deleteSelectedHistory(){
     if (selectedHistoryIndex < 0) return;
+    const scrollTop = hist.scrollTop;
     history.splice(selectedHistoryIndex, 1);
     if (selectedHistoryIndex >= history.length) selectedHistoryIndex = history.length - 1;
     saveHistory(history);
     renderHistory(true); // keep focus
+    hist.scrollTop = scrollTop;
   }
 
   function renderHistory(keepFocus=false){
@@ -370,26 +401,45 @@
       expr.className='expr';
       expr.innerHTML=highlightExprHTML(h.expr);
       expr.title='Double-click to load into input';
-      expr.addEventListener('dblclick',()=>{ eq.textContent=sanitize(h.expr); renderEqHighlighted(); eq.focus(); recompute(); });
+      expr.addEventListener('dblclick',()=>{ eq.textContent=prefixLeadingDots(sanitize(h.expr)); renderEqHighlighted(); eq.focus(); recompute(); });
       expr.addEventListener('contextmenu',async e=>{ e.preventDefault(); try{await navigator.clipboard.writeText(h.expr); showToast('Equation copied');}catch{showToast('Copy failed');} });
 
       const right=document.createElement('div'); right.style.display='flex'; right.style.alignItems='baseline';
       const eqs=document.createElement('div'); eqs.className='eqs'; eqs.textContent='=';
       const val=document.createElement('div'); val.className='val'; val.textContent=h.result;
       val.title='Double-click to load result into input';
-      val.addEventListener('dblclick',()=>{ eq.textContent=sanitize(String(h.result)); renderEqHighlighted(); eq.focus(); recompute(); });
+      val.addEventListener('dblclick',()=>{ eq.textContent=prefixLeadingDots(sanitize(String(h.result))); renderEqHighlighted(); eq.focus(); recompute(); });
       val.addEventListener('contextmenu',async e=>{ e.preventDefault(); try{await navigator.clipboard.writeText(h.result); showToast('Result copied');}catch{showToast('Copy failed');} });
 
       // Select row on click and focus it so Delete works immediately
       row.addEventListener('click', ()=>{ selectedHistoryIndex = idx; renderHistory(true); });
       row.addEventListener('focus', ()=>{ selectedHistoryIndex = idx; renderHistory(true); });
 
-      // Delete/Backspace remove one item (guard repeat)
+      // Keyboard interactions on history rows
       row.addEventListener('keydown', (e)=>{
-        if (e.repeat) return;
-        if(e.key==='Delete' || e.key==='Backspace'){
+        if(e.repeat) return;
+        if(e.key==='Delete'||e.key==='Backspace'){
+          e.preventDefault(); deleteSelectedHistory(); return;
+        }
+        if(e.key==='ArrowDown'){
           e.preventDefault();
-          deleteSelectedHistory();
+          if(selectedHistoryIndex < history.length-1){ selectedHistoryIndex++; renderHistory(true); }
+          return;
+        }
+        if(e.key==='ArrowUp'){
+          e.preventDefault();
+          if(selectedHistoryIndex > 0){ selectedHistoryIndex--; renderHistory(true); }
+          else { selectedHistoryIndex=-1; renderHistory(false); eq.focus(); }
+          return;
+        }
+        if(e.key==='Enter'){
+          e.preventDefault();
+          if(selectedHistoryIndex>=0 && history[selectedHistoryIndex]){
+            const h=history[selectedHistoryIndex];
+            eq.textContent=prefixLeadingDots(sanitize(h.expr));
+            renderEqHighlighted(); eq.focus(); recompute();
+          }
+          return;
         }
       });
 
@@ -408,8 +458,13 @@
   /* ===== Input events (contenteditable) ===== */
   function handleSanitizedInput(){
     const raw = plainText(eq);
-    const clean = sanitize(raw);
-    if(raw !== clean){ eq.textContent = clean; }
+    const clean = prefixLeadingDots(sanitize(raw));
+    if(raw !== clean){
+      const prevCaret = getCaretIndex(eq);
+      const shift = clean.length - raw.length;
+      eq.textContent = clean;
+      setCaretIndex(eq, Math.max(0, Math.min(prevCaret + shift, clean.length)));
+    }
     renderEqHighlighted();
     recompute(); scheduleLog();
   }
@@ -422,11 +477,20 @@
   eq.addEventListener('paste', (e)=>{
     e.preventDefault();
     const text=(e.clipboardData||window.clipboardData).getData('text');
-    document.execCommand('insertText', false, sanitize(text));
+    document.execCommand('insertText', false, prefixLeadingDots(sanitize(text)));
   });
   eq.addEventListener('keydown', (e)=>{
-    if(e.key==='Enter'){ e.preventDefault(); recompute(); if(currentValue!=null) logToHistoryIfValid(true); }
+    if(e.key==='Enter'){
+      e.preventDefault(); recompute();
+      if(currentValue!=null) logToHistoryIfValid(true);
+      else if(lastErrorReason==='divzero') showToast('Division by zero', true);
+      else if(lastErrorReason==='overflow') showToast('Overflow', true);
+      else if(lastErrorReason==='syntax' && plainText(eq).trim()) showToast('Syntax error', true);
+    }
     if(e.key==='Escape'){ e.preventDefault(); clearAll(); }
+    if(e.key==='ArrowDown' && history.length){
+      e.preventDefault(); selectedHistoryIndex=0; renderHistory(true);
+    }
   });
 
   function clearAll(){
@@ -434,6 +498,20 @@
     eq.focus();
     resultFullySelected=false; allSelectedFlag=false; app.classList.remove('all-selected');
   }
+
+  /* ===== Triple-click equation field to clear ===== */
+  let eqClickCount=0, eqClickTimer=null;
+  eq.addEventListener('mousedown', (e)=>{
+    eqClickCount++;
+    if(eqClickTimer) clearTimeout(eqClickTimer);
+    eqClickTimer = setTimeout(()=>{ eqClickCount=0; }, 400);
+    if(eqClickCount >= 3){
+      e.preventDefault();
+      clearAll();
+      eqClickCount=0;
+      if(eqClickTimer){ clearTimeout(eqClickTimer); eqClickTimer=null; }
+    }
+  });
 
   /* ===== Result area ===== */
   res.addEventListener('dblclick',()=>{
@@ -443,8 +521,9 @@
   });
   res.addEventListener('contextmenu', async (e)=>{
     e.preventDefault();
-    const t=(res.textContent||'').trim(); if(!t) return;
-    try{ await navigator.clipboard.writeText(t); showToast('Result copied'); }
+    if(currentValue==null) return;
+    const raw = String(clampDecimals(currentValue, 8));
+    try{ await navigator.clipboard.writeText(raw); showToast('Copied'); }
     catch{ showToast('Copy failed'); }
   });
   res.addEventListener('keydown',(e)=>{
