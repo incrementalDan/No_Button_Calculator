@@ -49,7 +49,9 @@
   }
   .app > .panel:last-child{ flex:1; min-height:0; display:flex; flex-direction:column; }
 
-  .top{ display:grid; grid-template-rows:auto 8px auto; gap:6px; }
+  .top{ display:grid; grid-template-rows:auto 8px auto; gap:6px; cursor:text; }
+  .top .box{ cursor:pointer; user-select:none; -webkit-user-select:none; -webkit-touch-callout:none; }
+  .pressing{ opacity:.55; transition:opacity .12s; }
 
   /* ===== Contenteditable INPUT ===== */
   .eq-wrap{ min-height:48px; }
@@ -80,10 +82,11 @@
     user-select:none;
   }
   #result{
-    min-height:36px; display:flex; align-items:flex-end; justify-content:flex-end;
+    flex:1; min-height:36px; display:flex; align-items:flex-end; justify-content:flex-end;
     font-weight:700; color:var(--orange-deep);
     font-size:clamp(24px,5vw,42px); line-height:1.12;
-    user-select:text; white-space:pre-wrap; word-break:break-word;
+    user-select:none; -webkit-user-select:none; -webkit-touch-callout:none;
+    cursor:pointer; white-space:pre-wrap; word-break:break-word;
   }
   #result.dim{ opacity:.25; filter:saturate(60%); }
 
@@ -116,6 +119,8 @@
     border-radius:14px;
     padding:6px 8px;
     cursor:default;
+    touch-action:pan-y;              /* vertical scroll stays native; we handle swipe-left */
+    -webkit-touch-callout:none;
   }
   .row:focus{ outline:none; }
   .row:hover{ background: rgba(255,255,255,.04); }
@@ -148,7 +153,7 @@
     <div class="divider"></div>
     <div class="result-wrap">
       <div class="equals">=</div>
-      <div id="result" contenteditable="true" aria-label="Result (double-click to select; right-click to copy)"></div>
+      <div id="result" aria-label="Result (tap to keep calculating; long-press or right-click to copy)"></div>
     </div>
     <div class="converters">
       <div class="box" id="inchBox"><div class="label">in</div><div class="value" id="inchVal">—</div></div>
@@ -163,9 +168,13 @@
 <script>
 (() => {
   /* ===== Utilities ===== */
-  const clampDecimals = (num, places) => Math.round((num + Number.EPSILON) * (10**places)) / (10**places);
+  const clampDecimals = (num, places) => Math.sign(num) * Math.round((Math.abs(num) + Number.EPSILON) * (10**places)) / (10**places);
   function formatNumber(value, maxDecimals=8){
     if (!isFinite(value)) return '∞';
+    // Tiny non-zero values would round to 0: keep ~6 significant digits instead
+    if (value !== 0 && clampDecimals(value, maxDecimals) === 0) {
+      maxDecimals = Math.min(20, 5 - Math.floor(Math.log10(Math.abs(value))));
+    }
     const rounded = clampDecimals(value, maxDecimals);
     let [i,f] = Math.abs(rounded).toFixed(maxDecimals).split('.');
     f = (f||'').replace(/0+$/,'');
@@ -215,7 +224,7 @@
       return base; }
     function T(){ let v=Pw(); if(v==null) return null; while(true){
         if(consume('*')){ const r=Pw(); if(r==null) return null; v*=r; }
-        else if(consume('/')){ const r=Pw(); if(r==null) return null; v/=r; }
+        else if(consume('/')){ const r=Pw(); if(r==null) return null; if(r===0) return NaN; v/=r; }
         else if(consume('%')){ const r=Pw(); if(r==null) return null; if(r===0) return NaN; v%=r; }
         else break; } return v; }
     function E(){ let v=T(); if(v==null) return null; while(true){
@@ -224,9 +233,21 @@
         else break; } return v; }
     const out=E(); if(out==null||i!==tokens.length) return null; return out;
   }
+  function addImplicitMultiply(tokens){
+    const out=[];
+    for(const tk of tokens){
+      const prev=out[out.length-1];
+      if(prev && (prev.t==='num'||prev.t===')') && (tk.t==='('||(prev.t===')'&&tk.t==='num'))){
+        out.push({t:'*', s:'*'});
+      }
+      out.push(tk);
+    }
+    return out;
+  }
   function evaluate(expr){
     if(!expr) return {ok:false, reason:'empty'};
-    const tokens=tokenize(expr); if(!tokens) return {ok:false, reason:'syntax'};
+    let tokens=tokenize(expr); if(!tokens) return {ok:false, reason:'syntax'};
+    tokens=addImplicitMultiply(tokens);
     const val=parseExpression(tokens);
     if(val==null) return {ok:false, reason:'syntax'};
     if(isNaN(val)) return {ok:false, reason:'divzero'};
@@ -300,7 +321,13 @@
   let history = loadHistory();
 
   /* ===== Input sanitize + highlight ===== */
-  function sanitize(str){ return str.replace(/[^0-9+\-*/().^%]/g,''); }
+  // Phone keyboards: x/X/×/· = multiply, ÷ = divide, unicode minus/dashes = minus
+  function mapSymbols(str){
+    return str.replace(/[xX×·∙]/g,'*').replace(/[÷∕]/g,'/').replace(/[−–—]/g,'-');
+  }
+  function sanitize(str){ return mapSymbols(str).replace(/[^0-9+\-*/().^%]/g,''); }
+  // Characters that are safe to drop silently (spaces, thousands commas)
+  function hasBadChars(str){ return /[^0-9+\-*/().^%\s,]/.test(mapSymbols(str)); }
   function prefixLeadingDots(str){
     return str.replace(/(^|[+\-*\/\(^%])(\.)(\d)/g, '$10$2$3');
   }
@@ -355,8 +382,6 @@
     saveHistory(history);
     selectedHistoryIndex = -1;      // clear any sticky selection
     renderHistory(false);           // do not focus history
-    // keep typing experience: ensure focus stays in the equation
-    if (document.activeElement !== eq) { eq.focus(); }
   }
 
   /* ===== History rendering / interactions ===== */
@@ -366,7 +391,7 @@
     const t=tokenize(sanitize(s)); if(!t) return s;
     return t.map(x=>{
       if(x.t==='num') return `<span class="num">${x.s}</span>`;
-      if('+-*/'.includes(x.t)) return `<span class="op">${x.s}</span>`;
+      if('+-*/^%'.includes(x.t)) return `<span class="op">${x.s}</span>`;
       if('()'.includes(x.t)) return `<span class="par">${x.s}</span>`;
       return x.s||'';
     }).join('');
@@ -400,19 +425,23 @@
       expr.className='expr';
       expr.innerHTML=highlightExprHTML(h.expr);
       expr.title='Double-click to load into input';
-      expr.addEventListener('dblclick',()=>{ eq.textContent=prefixLeadingDots(sanitize(h.expr)); renderEqHighlighted(); eq.focus(); recompute(); });
-      expr.addEventListener('contextmenu',async e=>{ e.preventDefault(); try{await navigator.clipboard.writeText(h.expr); showToast('Equation copied');}catch{showToast('Copy failed');} });
+      expr.addEventListener('dblclick',()=>loadIntoInput(h.expr));
+      expr.addEventListener('contextmenu',e=>{ e.preventDefault(); copyText(h.expr,'Equation copied'); });
 
       const right=document.createElement('div'); right.style.display='flex'; right.style.alignItems='baseline';
       const eqs=document.createElement('div'); eqs.className='eqs'; eqs.textContent='=';
       const val=document.createElement('div'); val.className='val'; val.textContent=h.result;
       val.title='Double-click to load result into input';
-      val.addEventListener('dblclick',()=>{ eq.textContent=prefixLeadingDots(sanitize(String(h.result))); renderEqHighlighted(); eq.focus(); recompute(); });
-      val.addEventListener('contextmenu',async e=>{ e.preventDefault(); try{await navigator.clipboard.writeText(h.result); showToast('Result copied');}catch{showToast('Copy failed');} });
+      val.addEventListener('dblclick',()=>loadIntoInput(h.result));
+      val.addEventListener('contextmenu',e=>{ e.preventDefault(); copyText(h.result,'Result copied'); });
+      right.classList.add('right');
 
       // Select row on click and focus it so Delete works immediately
-      row.addEventListener('click', ()=>{ selectedHistoryIndex = idx; renderHistory(true); });
-      row.addEventListener('focus', ()=>{ selectedHistoryIndex = idx; renderHistory(true); });
+      // Guard: re-rendering refocuses the row, which would fire focus again forever
+      const select=()=>{ if(selectedHistoryIndex!==idx){ selectedHistoryIndex = idx; renderHistory(true); } };
+      row.addEventListener('click', select);
+      row.addEventListener('focus', select);
+      addRowTouch(row, h, idx);
 
       // Keyboard interactions on history rows
       row.addEventListener('keydown', (e)=>{
@@ -457,7 +486,12 @@
   /* ===== Input events (contenteditable) ===== */
   function handleSanitizedInput(){
     const raw = plainText(eq);
-    const clean = prefixLeadingDots(sanitize(raw));
+    let clean = prefixLeadingDots(sanitize(raw));
+    // Starting a line with + * / ^ % continues from the last answer (like a pocket calculator)
+    if(clean.length===1 && '+*/^%'.includes(clean) && history.length){
+      clean = sanitize(history[0].result) + clean;
+      eq.textContent = clean; setCaretIndex(eq, clean.length);
+    }
     if(raw !== clean){
       const prevCaret = getCaretIndex(eq);
       const shift = clean.length - raw.length;
@@ -470,12 +504,16 @@
 
   // Block spaces
   eq.addEventListener('beforeinput', (e)=>{
-    if(e.inputType === 'insertText' && e.data === ' '){ e.preventDefault(); }
+    if(e.inputType === 'insertText' && e.data === ' '){ e.preventDefault(); return; }
+    if(e.data && e.inputType !== 'insertFromPaste' && hasBadChars(e.data)){
+      e.preventDefault(); showToast('Not allowed: '+e.data.trim(), true);
+    }
   });
   eq.addEventListener('input', handleSanitizedInput);
   eq.addEventListener('paste', (e)=>{
     e.preventDefault();
     const text=(e.clipboardData||window.clipboardData).getData('text');
+    if(hasBadChars(text)){ showToast('Paste blocked: has letters/symbols', true); return; }
     document.execCommand('insertText', false, prefixLeadingDots(sanitize(text)));
   });
   eq.addEventListener('keydown', (e)=>{
@@ -512,46 +550,113 @@
     }
   });
 
-  /* ===== Result area ===== */
-  res.addEventListener('dblclick',()=>{
-    const r=document.createRange(); r.selectNodeContents(res);
-    const s=window.getSelection(); s.removeAllRanges(); s.addRange(r);
-    resultFullySelected=true;
-  });
-  res.addEventListener('contextmenu', async (e)=>{
-    e.preventDefault();
-    if(currentValue==null) return;
-    const raw = String(clampDecimals(currentValue, 8));
-    try{ await navigator.clipboard.writeText(raw); showToast('Copied'); }
-    catch{ showToast('Copy failed'); }
-  });
-  res.addEventListener('keydown',(e)=>{
-    const isCmdC=(e.metaKey||e.ctrlKey)&&(e.key.toLowerCase()==='c'); if(isCmdC) return;
-    if(['Shift','Alt','Meta','Control','ArrowLeft','ArrowRight','ArrowUp','ArrowDown','Home','End','PageUp','PageDown'].includes(e.key)) return;
-    e.preventDefault();
-    const base=(res.textContent||'').trim(); if(!base){ eq.focus(); return; }
-    if(e.key==='Escape'){ clearAll(); return; }
-    if(e.key==='Backspace'||e.key==='Delete'){
-      eq.textContent=sanitize(base); renderEqHighlighted(); eq.focus(); recompute(); scheduleLog(); return;
-    }
-    if(e.key.length===1){
-      eq.textContent=sanitize(base)+sanitize(e.key); renderEqHighlighted(); eq.focus(); recompute(); scheduleLog(); return;
-    }
-    if(e.key==='Enter'){ recompute(); if(currentValue!=null) logToHistoryIfValid(true); }
-  });
+  /* ===== Shared helpers: load into input, copy ===== */
+  // Save the current line (if it's real math), then start a new line with `text`
+  function loadIntoInput(text){
+    const clean = prefixLeadingDots(sanitize(String(text||'')));
+    if(!clean) return;
+    logToHistoryIfValid(false);
+    eq.textContent = clean; renderEqHighlighted();
+    eq.focus(); setCaretIndex(eq, clean.length);
+    recompute(); scheduleLog();
+  }
+  async function copyText(text, msg='Copied'){
+    text = String(text||'').replace(/,/g,'');
+    if(!text || text==='—') return;
+    try{ await navigator.clipboard.writeText(text); showToast(msg); return; }catch{}
+    // Fallback for older mobile browsers
+    const ta=document.createElement('textarea'); ta.value=text; ta.setAttribute('readonly','');
+    ta.style.position='fixed'; ta.style.opacity='0'; document.body.appendChild(ta); ta.select();
+    let ok=false; try{ ok=document.execCommand('copy'); }catch{}
+    ta.remove(); showToast(ok?msg:'Copy failed', !ok);
+  }
 
-  /* ===== Right-click copy for converters ===== */
-  inchVal.addEventListener('contextmenu', async (e)=>{
-    e.preventDefault();
-    const t=(inchVal.textContent||'').trim(); if(!t || t==='—') return;
-    try{ await navigator.clipboard.writeText(t); showToast('in copied'); }
-    catch{ showToast('Copy failed'); }
-  });
-  mmVal.addEventListener('contextmenu', async (e)=>{
-    e.preventDefault();
-    const t=(mmVal.textContent||'').trim(); if(!t || t==='—') return;
-    try{ await navigator.clipboard.writeText(t); showToast('mm copied'); }
-    catch{ showToast('Copy failed'); }
+  // Tap = onTap, long-press (iPhone has no right-click) or right-click = copy
+  function addTapAndHold(el, getText, onTap, copyMsg){
+    let timer=null, held=false, moved=false, sx=0, sy=0;
+    const reset=()=>{ clearTimeout(timer); el.classList.remove('pressing'); };
+    el.addEventListener('touchstart', e=>{
+      held=false; moved=false; const t=e.touches[0]; sx=t.clientX; sy=t.clientY;
+      timer=setTimeout(()=>{ held=true; el.classList.add('pressing'); }, 500);
+    }, {passive:true});
+    el.addEventListener('touchmove', e=>{
+      const t=e.touches[0]; if(Math.hypot(t.clientX-sx,t.clientY-sy)>10){ moved=true; reset(); }
+    }, {passive:true});
+    el.addEventListener('touchcancel', reset);
+    el.addEventListener('touchend', e=>{
+      reset(); if(moved) return;
+      e.preventDefault();               // stop the follow-up mouse click
+      if(held) copyText(getText(), copyMsg); else onTap();
+    });
+    el.addEventListener('click', ()=>onTap());   // mouse
+    el.addEventListener('contextmenu', e=>{ e.preventDefault(); copyText(getText(), copyMsg); });
+  }
+
+  const resultText = ()=> currentValue==null ? '' : formatNumber(currentValue, 8);
+  addTapAndHold(res, resultText, ()=>{
+    const t=resultText();
+    if(t) loadIntoInput(t); else { eq.focus(); setCaretIndex(eq, plainText(eq).length); }
+  }, 'Copied');
+  addTapAndHold(inchBox, ()=>inchVal.textContent, ()=>loadIntoInput(inchVal.textContent), 'in copied');
+  addTapAndHold(mmBox, ()=>mmVal.textContent, ()=>loadIntoInput(mmVal.textContent), 'mm copied');
+
+  /* ===== History rows on touch: tap = load, hold = copy, swipe left = delete ===== */
+  function deleteHistoryAt(idx){
+    const scrollTop = hist.scrollTop;
+    history.splice(idx, 1); saveHistory(history);
+    selectedHistoryIndex = -1; renderHistory(false);
+    hist.scrollTop = scrollTop;
+  }
+  function addRowTouch(row, h, idx){
+    let sx=0, sy=0, dx=0, mode=null, held=false, timer=null;
+    const pick = t => (t.closest && t.closest('.right')) ? h.result : h.expr;
+    row.addEventListener('touchstart', e=>{
+      const t=e.touches[0]; sx=t.clientX; sy=t.clientY; dx=0; mode=null; held=false;
+      row.style.transition='none';
+      timer=setTimeout(()=>{ if(!mode){ held=true; row.classList.add('pressing'); } }, 500);
+    }, {passive:true});
+    row.addEventListener('touchmove', e=>{
+      const t=e.touches[0], mx=t.clientX-sx, my=t.clientY-sy;
+      if(!mode && Math.hypot(mx,my)>10){
+        clearTimeout(timer); row.classList.remove('pressing');
+        mode = Math.abs(mx) > Math.abs(my) ? 'swipe' : 'scroll';
+      }
+      if(mode==='swipe'){ dx=Math.min(0,mx); row.style.transform=`translateX(${dx}px)`; }
+    }, {passive:true});
+    row.addEventListener('touchcancel', ()=>{
+      clearTimeout(timer); row.classList.remove('pressing');
+      row.style.transition='transform .15s'; row.style.transform='';
+    });
+    row.addEventListener('touchend', e=>{
+      clearTimeout(timer); row.classList.remove('pressing');
+      if(mode==='scroll') return;
+      e.preventDefault();               // no focus/click: keeps keyboard steady
+      row.style.transition='transform .15s';
+      if(mode==='swipe'){
+        if(dx < -Math.min(100, row.offsetWidth*0.3)){
+          row.style.transform='translateX(-110%)';
+          setTimeout(()=>deleteHistoryAt(idx), 150);
+          showToast('Deleted');
+        } else row.style.transform='';
+        return;
+      }
+      if(held) copyText(pick(e.target), 'Copied');
+      else loadIntoInput(pick(e.target));
+    });
+  }
+
+  /* ===== Tap anywhere in the top panel => focus input ===== */
+  // Skips the input itself, the in/mm boxes, and the result when it has a value
+  function isDeadSpace(t){
+    if (eq.contains(t)) return false;
+    if (inchBox.contains(t) || mmBox.contains(t)) return false;
+    if (res.contains(t) && (res.textContent||'').trim()) return false;
+    return true;
+  }
+  mainPanel.addEventListener('mousedown', (e)=>{ if(isDeadSpace(e.target)) e.preventDefault(); });
+  mainPanel.addEventListener('click', (e)=>{
+    if(!isDeadSpace(e.target)) return;
+    eq.focus(); setCaretIndex(eq, plainText(eq).length);
   });
 
   /* ===== Quadruple-click main panel => select-all ===== */
