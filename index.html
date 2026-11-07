@@ -49,7 +49,8 @@
   }
   .app > .panel:last-child{ flex:1; min-height:0; display:flex; flex-direction:column; }
 
-  .top{ display:grid; grid-template-rows:auto 8px auto; gap:6px; }
+  .top{ display:grid; grid-template-rows:auto 8px auto; gap:6px; cursor:text; }
+  .top .box{ cursor:default; }
 
   /* ===== Contenteditable INPUT ===== */
   .eq-wrap{ min-height:48px; }
@@ -80,7 +81,7 @@
     user-select:none;
   }
   #result{
-    min-height:36px; display:flex; align-items:flex-end; justify-content:flex-end;
+    flex:1; min-height:36px; display:flex; align-items:flex-end; justify-content:flex-end;
     font-weight:700; color:var(--orange-deep);
     font-size:clamp(24px,5vw,42px); line-height:1.12;
     user-select:text; white-space:pre-wrap; word-break:break-word;
@@ -326,6 +327,8 @@
   function setResultDisplay(text, dim=false){
     res.textContent = text || '';
     res.classList.toggle('dim', dim);
+    // Empty result shouldn't grab focus; taps fall through to the input
+    res.contentEditable = (text && text.trim()) ? 'true' : 'false';
     if(!dim && text && text.trim()){
       inchBox.classList.remove('empty'); mmBox.classList.remove('empty');
       inchVal.textContent = formatInch(currentValue);
@@ -552,6 +555,20 @@
     const t=(mmVal.textContent||'').trim(); if(!t || t==='—') return;
     try{ await navigator.clipboard.writeText(t); showToast('mm copied'); }
     catch{ showToast('Copy failed'); }
+  });
+
+  /* ===== Tap anywhere in the top panel => focus input ===== */
+  // Skips the input itself, the in/mm boxes, and the result when it has a value
+  function isDeadSpace(t){
+    if (eq.contains(t)) return false;
+    if (inchBox.contains(t) || mmBox.contains(t)) return false;
+    if (res.contains(t) && (res.textContent||'').trim()) return false;
+    return true;
+  }
+  mainPanel.addEventListener('mousedown', (e)=>{ if(isDeadSpace(e.target)) e.preventDefault(); });
+  mainPanel.addEventListener('click', (e)=>{
+    if(!isDeadSpace(e.target)) return;
+    eq.focus(); setCaretIndex(eq, plainText(eq).length);
   });
 
   /* ===== Quadruple-click main panel => select-all ===== */
