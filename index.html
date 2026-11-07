@@ -164,9 +164,13 @@
 <script>
 (() => {
   /* ===== Utilities ===== */
-  const clampDecimals = (num, places) => Math.round((num + Number.EPSILON) * (10**places)) / (10**places);
+  const clampDecimals = (num, places) => Math.sign(num) * Math.round((Math.abs(num) + Number.EPSILON) * (10**places)) / (10**places);
   function formatNumber(value, maxDecimals=8){
     if (!isFinite(value)) return '∞';
+    // Tiny non-zero values would round to 0: keep ~6 significant digits instead
+    if (value !== 0 && clampDecimals(value, maxDecimals) === 0) {
+      maxDecimals = Math.min(20, 5 - Math.floor(Math.log10(Math.abs(value))));
+    }
     const rounded = clampDecimals(value, maxDecimals);
     let [i,f] = Math.abs(rounded).toFixed(maxDecimals).split('.');
     f = (f||'').replace(/0+$/,'');
@@ -216,7 +220,7 @@
       return base; }
     function T(){ let v=Pw(); if(v==null) return null; while(true){
         if(consume('*')){ const r=Pw(); if(r==null) return null; v*=r; }
-        else if(consume('/')){ const r=Pw(); if(r==null) return null; v/=r; }
+        else if(consume('/')){ const r=Pw(); if(r==null) return null; if(r===0) return NaN; v/=r; }
         else if(consume('%')){ const r=Pw(); if(r==null) return null; if(r===0) return NaN; v%=r; }
         else break; } return v; }
     function E(){ let v=T(); if(v==null) return null; while(true){
@@ -225,9 +229,21 @@
         else break; } return v; }
     const out=E(); if(out==null||i!==tokens.length) return null; return out;
   }
+  function addImplicitMultiply(tokens){
+    const out=[];
+    for(const tk of tokens){
+      const prev=out[out.length-1];
+      if(prev && (prev.t==='num'||prev.t===')') && (tk.t==='('||(prev.t===')'&&tk.t==='num'))){
+        out.push({t:'*', s:'*'});
+      }
+      out.push(tk);
+    }
+    return out;
+  }
   function evaluate(expr){
     if(!expr) return {ok:false, reason:'empty'};
-    const tokens=tokenize(expr); if(!tokens) return {ok:false, reason:'syntax'};
+    let tokens=tokenize(expr); if(!tokens) return {ok:false, reason:'syntax'};
+    tokens=addImplicitMultiply(tokens);
     const val=parseExpression(tokens);
     if(val==null) return {ok:false, reason:'syntax'};
     if(isNaN(val)) return {ok:false, reason:'divzero'};
@@ -301,7 +317,13 @@
   let history = loadHistory();
 
   /* ===== Input sanitize + highlight ===== */
-  function sanitize(str){ return str.replace(/[^0-9+\-*/().^%]/g,''); }
+  // Phone keyboards: x/X/×/· = multiply, ÷ = divide, unicode minus/dashes = minus
+  function mapSymbols(str){
+    return str.replace(/[xX×·∙]/g,'*').replace(/[÷∕]/g,'/').replace(/[−–—]/g,'-');
+  }
+  function sanitize(str){ return mapSymbols(str).replace(/[^0-9+\-*/().^%]/g,''); }
+  // Characters that are safe to drop silently (spaces, thousands commas)
+  function hasBadChars(str){ return /[^0-9+\-*/().^%\s,]/.test(mapSymbols(str)); }
   function prefixLeadingDots(str){
     return str.replace(/(^|[+\-*\/\(^%])(\.)(\d)/g, '$10$2$3');
   }
@@ -358,8 +380,6 @@
     saveHistory(history);
     selectedHistoryIndex = -1;      // clear any sticky selection
     renderHistory(false);           // do not focus history
-    // keep typing experience: ensure focus stays in the equation
-    if (document.activeElement !== eq) { eq.focus(); }
   }
 
   /* ===== History rendering / interactions ===== */
@@ -369,7 +389,7 @@
     const t=tokenize(sanitize(s)); if(!t) return s;
     return t.map(x=>{
       if(x.t==='num') return `<span class="num">${x.s}</span>`;
-      if('+-*/'.includes(x.t)) return `<span class="op">${x.s}</span>`;
+      if('+-*/^%'.includes(x.t)) return `<span class="op">${x.s}</span>`;
       if('()'.includes(x.t)) return `<span class="par">${x.s}</span>`;
       return x.s||'';
     }).join('');
@@ -473,12 +493,16 @@
 
   // Block spaces
   eq.addEventListener('beforeinput', (e)=>{
-    if(e.inputType === 'insertText' && e.data === ' '){ e.preventDefault(); }
+    if(e.inputType === 'insertText' && e.data === ' '){ e.preventDefault(); return; }
+    if(e.data && e.inputType !== 'insertFromPaste' && hasBadChars(e.data)){
+      e.preventDefault(); showToast('Not allowed: '+e.data.trim(), true);
+    }
   });
   eq.addEventListener('input', handleSanitizedInput);
   eq.addEventListener('paste', (e)=>{
     e.preventDefault();
     const text=(e.clipboardData||window.clipboardData).getData('text');
+    if(hasBadChars(text)){ showToast('Paste blocked: has letters/symbols', true); return; }
     document.execCommand('insertText', false, prefixLeadingDots(sanitize(text)));
   });
   eq.addEventListener('keydown', (e)=>{
@@ -524,7 +548,7 @@
   res.addEventListener('contextmenu', async (e)=>{
     e.preventDefault();
     if(currentValue==null) return;
-    const raw = String(clampDecimals(currentValue, 8));
+    const raw = formatNumber(currentValue, 8).replace(/,/g,'');
     try{ await navigator.clipboard.writeText(raw); showToast('Copied'); }
     catch{ showToast('Copy failed'); }
   });
